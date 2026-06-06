@@ -1,0 +1,120 @@
+---
+# ================================================================
+# CIS Benchmark Level 1 - Fedora 43 Workstation
+# Règles ciblées :
+#   - Disable Mounting of cramfs, freevxfs, hfs, hfsplus, jffs2
+#   - Add noexec Option to /tmp
+#   - Disable ATM, CAN, DCCP, RDS, TIPC Support
+#
+# Prérequis : ansible-galaxy collection install community.general
+#
+# Usage :
+#   ansible-playbook -i inventory.ini cis-fs-network.yml --check
+#   ansible-playbook -i inventory.ini cis-fs-network.yml
+# ================================================================
+
+- name: CIS - Filesystem modules & Network protocols
+  hosts: all
+  become: true
+
+  handlers:
+    - name: Recharger systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Activer tmp.mount
+      ansible.builtin.systemd:
+        name: tmp.mount
+        enabled: true
+        state: started
+
+  tasks:
+
+    # ============================================================
+    # Disable Mounting of cramfs, freevxfs, hfs, hfsplus, jffs2
+    # ============================================================
+
+    - name: "CIS | Filesystem | Blacklister les modules FS inutiles"
+      ansible.builtin.copy:
+        dest: /etc/modprobe.d/cis-filesystem.conf
+        content: |
+          install cramfs /bin/true
+          blacklist cramfs
+          install freevxfs /bin/true
+          blacklist freevxfs
+          install hfs /bin/true
+          blacklist hfs
+          install hfsplus /bin/true
+          blacklist hfsplus
+          install jffs2 /bin/true
+          blacklist jffs2
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: "CIS | Filesystem | Décharger les modules FS si présents"
+      community.general.modprobe:
+        name: "{{ item }}"
+        state: absent
+      loop: [cramfs, freevxfs, hfs, hfsplus, jffs2]
+      ignore_errors: true
+
+    # ============================================================
+    # Add noexec Option to /tmp
+    # ============================================================
+
+    - name: "CIS | Filesystem | Monter /tmp avec noexec, nodev, nosuid"
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/tmp.mount
+        content: |
+          [Unit]
+          Description=Temporary Directory /tmp
+          ConditionPathIsSymbolicLink=!/tmp
+          DefaultDependencies=no
+          Conflicts=umount.target
+          Before=local-fs.target umount.target
+          After=swap.target
+
+          [Mount]
+          What=tmpfs
+          Where=/tmp
+          Type=tmpfs
+          Options=mode=1777,strictatime,noexec,nodev,nosuid
+
+          [Install]
+          WantedBy=local-fs.target
+        owner: root
+        group: root
+        mode: "0644"
+      notify:
+        - Recharger systemd
+        - Activer tmp.mount
+
+    # ============================================================
+    # Disable ATM, CAN, DCCP, RDS, TIPC Support
+    # ============================================================
+
+    - name: "CIS | Network | Blacklister les protocoles réseau inutiles"
+      ansible.builtin.copy:
+        dest: /etc/modprobe.d/cis-network-protocols.conf
+        content: |
+          install atm /bin/true
+          blacklist atm
+          install can /bin/true
+          blacklist can
+          install dccp /bin/true
+          blacklist dccp
+          install rds /bin/true
+          blacklist rds
+          install tipc /bin/true
+          blacklist tipc
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: "CIS | Network | Décharger les modules réseau si présents"
+      community.general.modprobe:
+        name: "{{ item }}"
+        state: absent
+      loop: [atm, can, dccp, rds, tipc]
+      ignore_errors: true
