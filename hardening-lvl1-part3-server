@@ -1,0 +1,137 @@
+---
+# ================================================================
+# CIS Benchmark Level 1 - Fedora 43 Workstation
+# Règles ciblées :
+#   - Disable Installation of Weak Dependencies in DNF
+#   - Ensure gpgcheck Enabled In Main dnf Configuration
+#   - Disable core dump backtraces
+#   - Disable storing core dump
+#   - Disable Core Dumps for All Users
+#   - Disable Core Dumps for SUID programs
+#   - Restrict Exposed Kernel Pointer Addresses Access
+#   - Enable Randomized Layout of Virtual Address Space (ASLR)
+#   - Restrict Access to Kernel Message Buffer
+#   - Restrict usage of ptrace to descendant processes
+#
+# Usage :
+#   ansible-playbook -i inventory.ini cis-dnf-coredump-kernel.yml --check
+#   ansible-playbook -i inventory.ini cis-dnf-coredump-kernel.yml
+# ================================================================
+
+- name: CIS - DNF, Core Dumps & Kernel Hardening
+  hosts: all
+  become: true
+
+  tasks:
+
+    # ============================================================
+    # Updating Software - DNF
+    # ============================================================
+
+    - name: "CIS | DNF | Désactiver l'installation des weak dependencies"
+      ansible.builtin.lineinfile:
+        path: /etc/dnf/dnf.conf
+        regexp: '^#?install_weak_deps='
+        line: 'install_weak_deps=False'
+        create: true
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: "CIS | DNF | Activer gpgcheck dans la configuration principale"
+      ansible.builtin.lineinfile:
+        path: /etc/dnf/dnf.conf
+        regexp: '^#?gpgcheck='
+        line: 'gpgcheck=1'
+        create: true
+        owner: root
+        group: root
+        mode: "0644"
+
+    # ============================================================
+    # Disable Core Dumps
+    # ============================================================
+
+    - name: "CIS | CoreDump | Désactiver les core dumps pour tous les utilisateurs (limits.conf)"
+      ansible.builtin.lineinfile:
+        path: /etc/security/limits.conf
+        regexp: '^\*\s+hard\s+core'
+        line: '* hard core 0'
+        create: true
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: "CIS | CoreDump | Désactiver fs.suid_dumpable (core dumps SUID)"
+      ansible.posix.sysctl:
+        name: fs.suid_dumpable
+        value: "0"
+        state: present
+        sysctl_file: /etc/sysctl.d/60-cis-coredumps.conf
+        reload: true
+
+    - name: "CIS | CoreDump | Désactiver le stockage des core dumps (systemd-coredump)"
+      ansible.builtin.lineinfile:
+        path: /etc/systemd/coredump.conf
+        regexp: '^#?Storage='
+        line: 'Storage=none'
+        create: true
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: "CIS | CoreDump | Désactiver les backtraces des core dumps (systemd-coredump)"
+      ansible.builtin.lineinfile:
+        path: /etc/systemd/coredump.conf
+        regexp: '^#?Backtrace='
+        line: 'Backtrace=no'
+        create: true
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: "CIS | CoreDump | Limiter la taille à 0 (ProcessSizeMax)"
+      ansible.builtin.lineinfile:
+        path: /etc/systemd/coredump.conf
+        regexp: '^#?ProcessSizeMax='
+        line: 'ProcessSizeMax=0'
+        create: true
+        owner: root
+        group: root
+        mode: "0644"
+
+    # ============================================================
+    # ExecShield / Kernel Parameters
+    # ============================================================
+
+    - name: "CIS | Kernel | Activer l'ASLR (randomisation de l'espace mémoire)"
+      ansible.posix.sysctl:
+        name: kernel.randomize_va_space
+        value: "2"
+        state: present
+        sysctl_file: /etc/sysctl.d/60-cis-kernel.conf
+        reload: true
+
+    - name: "CIS | Kernel | Restreindre l'accès aux adresses des pointeurs kernel (kptr_restrict)"
+      ansible.posix.sysctl:
+        name: kernel.kptr_restrict
+        value: "2"
+        state: present
+        sysctl_file: /etc/sysctl.d/60-cis-kernel.conf
+        reload: true
+
+    - name: "CIS | Kernel | Restreindre l'accès au buffer des messages kernel (dmesg_restrict)"
+      ansible.posix.sysctl:
+        name: kernel.dmesg_restrict
+        value: "1"
+        state: present
+        sysctl_file: /etc/sysctl.d/60-cis-kernel.conf
+        reload: true
+
+    - name: "CIS | Kernel | Restreindre ptrace aux processus descendants uniquement"
+      ansible.posix.sysctl:
+        name: kernel.yama.ptrace_scope
+        value: "1"
+        state: present
+        sysctl_file: /etc/sysctl.d/60-cis-kernel.conf
+        reload: true
