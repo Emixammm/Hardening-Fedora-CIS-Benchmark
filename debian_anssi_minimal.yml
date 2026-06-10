@@ -1,0 +1,297 @@
+---
+# =============================================================================
+# Playbook : Durcissement des politiques de mots de passe Linux
+# Remédie aux règles CIS/STIG en échec :
+#   - Lockouts pour tentatives de connexion échouées
+#   - Qualité des mots de passe (pam_pwquality)
+#   - Expiration du mot de passe root
+#   - Nombre de rounds de hachage (password-auth)
+# Compatible : RHEL/CentOS/Rocky 7/8/9, Ubuntu/Debian
+# =============================================================================
+
+- name: Durcissement des politiques de mots de passe
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    # --- Lockout pour tentatives échouées ---
+    password_deny_attempts: 5          # Nombre max de tentatives avant verrouillage
+    password_unlock_time: 900          # Durée du verrouillage en secondes (15 min)
+    password_fail_interval: 900        # Intervalle de comptage des échecs (secondes)
+    password_remember: 5               # Nombre de mots de passe mémorisés (réutilisation)
+
+    # --- Qualité du mot de passe (pam_pwquality) ---
+    pwq_minlen: 14                     # Longueur minimale
+    pwq_dcredit: -1                    # Min. chiffres (négatif = nombre minimum)
+    pwq_ucredit: -1                    # Min. majuscules
+    pwq_lcredit: -1                    # Min. minuscules
+    pwq_ocredit: -1                    # Min. caractères spéciaux
+    pwq_minclass: 4                    # Min. catégories différentes
+    pwq_retry: 3                       # Tentatives max par session
+
+    # --- Expiration du mot de passe root ---
+    root_pass_max_age: 365             # Âge maximum du mot de passe root (jours)
+
+    # --- Hachage des mots de passe ---
+    sha_rounds: 65536                  # Nombre de rounds SHA (password-auth / shadow)
+
+  # ===========================================================================
+  # 1. INSTALLATION DE pam_pwquality
+  # ===========================================================================
+  tasks:
+    - name: "[pam_pwquality] Installer le paquet libpam-pwquality (Debian/Ubuntu)"
+      ansible.builtin.package:
+        name: libpam-pwquality
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: "[pam_pwquality] Installer le paquet libpwquality (RedHat/Rocky/CentOS)"
+      ansible.builtin.package:
+        name: libpwquality
+        state: present
+      when: ansible_os_family == "RedHat"
+
+  # ===========================================================================
+  # 2. CONFIGURATION DE pam_pwquality (/etc/security/pwquality.conf)
+  # ===========================================================================
+    - name: "[pwquality] Définir la longueur minimale du mot de passe"
+      ansible.builtin.lineinfile:
+        path: /etc/security/pwquality.conf
+        regexp: '^#?\s*minlen\s*='
+        line: "minlen = {{ pwq_minlen }}"
+        state: present
+
+    - name: "[pwquality] Définir le minimum de chiffres"
+      ansible.builtin.lineinfile:
+        path: /etc/security/pwquality.conf
+        regexp: '^#?\s*dcredit\s*='
+        line: "dcredit = {{ pwq_dcredit }}"
+        state: present
+
+    - name: "[pwquality] Définir le minimum de majuscules"
+      ansible.builtin.lineinfile:
+        path: /etc/security/pwquality.conf
+        regexp: '^#?\s*ucredit\s*='
+        line: "ucredit = {{ pwq_ucredit }}"
+        state: present
+
+    - name: "[pwquality] Définir le minimum de minuscules"
+      ansible.builtin.lineinfile:
+        path: /etc/security/pwquality.conf
+        regexp: '^#?\s*lcredit\s*='
+        line: "lcredit = {{ pwq_lcredit }}"
+        state: present
+
+    - name: "[pwquality] Définir le minimum de caractères spéciaux"
+      ansible.builtin.lineinfile:
+        path: /etc/security/pwquality.conf
+        regexp: '^#?\s*ocredit\s*='
+        line: "ocredit = {{ pwq_ocredit }}"
+        state: present
+
+    - name: "[pwquality] Définir le minimum de catégories différentes"
+      ansible.builtin.lineinfile:
+        path: /etc/security/pwquality.conf
+        regexp: '^#?\s*minclass\s*='
+        line: "minclass = {{ pwq_minclass }}"
+        state: present
+
+    - name: "[pwquality] Définir le nombre de tentatives max par session"
+      ansible.builtin.lineinfile:
+        path: /etc/security/pwquality.conf
+        regexp: '^#?\s*retry\s*='
+        line: "retry = {{ pwq_retry }}"
+        state: present
+
+  # ===========================================================================
+  # 3. CONFIGURATION PAM - LOCKOUT (pam_faillock / pam_tally2)
+  # ===========================================================================
+
+    # --- RedHat 8/9 / Rocky : pam_faillock ---
+    - name: "[faillock] Configurer /etc/security/faillock.conf (RHEL 8+)"
+      ansible.builtin.blockinfile:
+        path: /etc/security/faillock.conf
+        create: true
+        marker: "# {mark} ANSIBLE MANAGED - faillock"
+        block: |
+          deny = {{ password_deny_attempts }}
+          unlock_time = {{ password_unlock_time }}
+          fail_interval = {{ password_fail_interval }}
+          even_deny_root
+          root_unlock_time = {{ password_unlock_time }}
+      when:
+        - ansible_os_family == "RedHat"
+        - ansible_distribution_major_version | int >= 8
+
+    # --- RedHat 7 : pam_tally2 dans system-auth et password-auth ---
+    - name: "[tally2] Configurer pam_tally2 dans system-auth (RHEL 7)"
+      ansible.builtin.lineinfile:
+        path: /etc/pam.d/system-auth
+        insertafter: '^auth\s+required\s+pam_env.so'
+        line: >-
+          auth        required      pam_tally2.so
+          deny={{ password_deny_attempts }}
+          unlock_time={{ password_unlock_time }}
+          fail_interval={{ password_fail_interval }}
+          even_deny_root
+          root_unlock_time={{ password_unlock_time }}
+        state: present
+      when:
+        - ansible_os_family == "RedHat"
+        - ansible_distribution_major_version | int == 7
+
+    - name: "[tally2] Configurer pam_tally2 dans password-auth (RHEL 7)"
+      ansible.builtin.lineinfile:
+        path: /etc/pam.d/password-auth
+        insertafter: '^auth\s+required\s+pam_env.so'
+        line: >-
+          auth        required      pam_tally2.so
+          deny={{ password_deny_attempts }}
+          unlock_time={{ password_unlock_time }}
+          fail_interval={{ password_fail_interval }}
+          even_deny_root
+          root_unlock_time={{ password_unlock_time }}
+        state: present
+      when:
+        - ansible_os_family == "RedHat"
+        - ansible_distribution_major_version | int == 7
+
+    # --- Debian/Ubuntu : pam_faillock dans common-auth ---
+    - name: "[faillock] Configurer pam_faillock preauth dans common-auth (Debian)"
+      ansible.builtin.lineinfile:
+        path: /etc/pam.d/common-auth
+        insertbefore: '^auth\s+.*pam_unix.so'
+        line: >-
+          auth        required      pam_faillock.so preauth
+          silent
+          deny={{ password_deny_attempts }}
+          unlock_time={{ password_unlock_time }}
+          fail_interval={{ password_fail_interval }}
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: "[faillock] Configurer pam_faillock authfail dans common-auth (Debian)"
+      ansible.builtin.lineinfile:
+        path: /etc/pam.d/common-auth
+        insertafter: '^auth\s+.*pam_unix.so'
+        line: >-
+          auth        [default=die] pam_faillock.so authfail
+          deny={{ password_deny_attempts }}
+          unlock_time={{ password_unlock_time }}
+          fail_interval={{ password_fail_interval }}
+        state: present
+      when: ansible_os_family == "Debian"
+
+  # ===========================================================================
+  # 4. LIMITATION DE LA RÉUTILISATION DES MOTS DE PASSE (pam_pwhistory)
+  # ===========================================================================
+
+    - name: "[pwhistory] Limiter la réutilisation dans common-password (Debian)"
+      ansible.builtin.lineinfile:
+        path: /etc/pam.d/common-password
+        regexp: '^password\s+.*pam_pwhistory.so'
+        line: "password    required      pam_pwhistory.so remember={{ password_remember }} use_authtok"
+        insertbefore: '^password\s+.*pam_unix.so'
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: "[pwhistory] Limiter la réutilisation dans system-auth (RedHat)"
+      ansible.builtin.lineinfile:
+        path: /etc/pam.d/system-auth
+        regexp: '^password\s+.*pam_pwhistory.so'
+        line: "password    required      pam_pwhistory.so remember={{ password_remember }} use_authtok"
+        insertbefore: '^password\s+.*pam_unix.so'
+        state: present
+      when: ansible_os_family == "RedHat"
+
+    - name: "[pwhistory] Limiter la réutilisation dans password-auth (RedHat)"
+      ansible.builtin.lineinfile:
+        path: /etc/pam.d/password-auth
+        regexp: '^password\s+.*pam_pwhistory.so'
+        line: "password    required      pam_pwhistory.so remember={{ password_remember }} use_authtok"
+        insertbefore: '^password\s+.*pam_unix.so'
+        state: present
+      when: ansible_os_family == "RedHat"
+
+  # ===========================================================================
+  # 5. EXPIRATION DU MOT DE PASSE ROOT (chage)
+  # ===========================================================================
+
+    - name: "[expiration] Définir l'âge maximum du mot de passe root"
+      ansible.builtin.command:
+        cmd: "chage --maxdays {{ root_pass_max_age }} root"
+      changed_when: true
+
+    - name: "[expiration] Vérifier la configuration dans /etc/login.defs"
+      ansible.builtin.lineinfile:
+        path: /etc/login.defs
+        regexp: '^PASS_MAX_DAYS\s+'
+        line: "PASS_MAX_DAYS   {{ root_pass_max_age }}"
+        state: present
+
+  # ===========================================================================
+  # 6. NOMBRE DE ROUNDS DE HACHAGE SHA (password-auth / login.defs)
+  # ===========================================================================
+
+    - name: "[sha_rounds] Configurer SHA_CRYPT_MIN_ROUNDS dans /etc/login.defs"
+      ansible.builtin.lineinfile:
+        path: /etc/login.defs
+        regexp: '^#?\s*SHA_CRYPT_MIN_ROUNDS\s+'
+        line: "SHA_CRYPT_MIN_ROUNDS {{ sha_rounds }}"
+        state: present
+
+    - name: "[sha_rounds] Configurer SHA_CRYPT_MAX_ROUNDS dans /etc/login.defs"
+      ansible.builtin.lineinfile:
+        path: /etc/login.defs
+        regexp: '^#?\s*SHA_CRYPT_MAX_ROUNDS\s+'
+        line: "SHA_CRYPT_MAX_ROUNDS {{ sha_rounds }}"
+        state: present
+
+    - name: "[sha_rounds] Configurer rounds dans pam_unix (password-auth RedHat)"
+      ansible.builtin.lineinfile:
+        path: /etc/pam.d/password-auth
+        regexp: '^password\s+sufficient\s+pam_unix.so'
+        line: "password    sufficient    pam_unix.so sha512 shadow nullok use_authtok rounds={{ sha_rounds }}"
+        state: present
+      when: ansible_os_family == "RedHat"
+
+    - name: "[sha_rounds] Configurer rounds dans pam_unix (system-auth RedHat)"
+      ansible.builtin.lineinfile:
+        path: /etc/pam.d/system-auth
+        regexp: '^password\s+sufficient\s+pam_unix.so'
+        line: "password    sufficient    pam_unix.so sha512 shadow nullok use_authtok rounds={{ sha_rounds }}"
+        state: present
+      when: ansible_os_family == "RedHat"
+
+    - name: "[sha_rounds] Configurer rounds dans pam_unix (common-password Debian)"
+      ansible.builtin.lineinfile:
+        path: /etc/pam.d/common-password
+        regexp: '^password\s+.*pam_unix.so'
+        line: "password    [success=1 default=ignore]    pam_unix.so sha512 obscure use_authtok try_first_pass rounds={{ sha_rounds }}"
+        state: present
+      when: ansible_os_family == "Debian"
+
+  # ===========================================================================
+  # 7. VÉRIFICATION FINALE
+  # ===========================================================================
+
+    - name: "[check] Afficher la configuration de chage pour root"
+      ansible.builtin.command:
+        cmd: chage -l root
+      register: chage_output
+      changed_when: false
+
+    - name: "[check] Résultat chage root"
+      ansible.builtin.debug:
+        var: chage_output.stdout_lines
+
+    - name: "[check] Afficher la configuration pwquality"
+      ansible.builtin.command:
+        cmd: grep -E "^(minlen|dcredit|ucredit|lcredit|ocredit|minclass|retry)" /etc/security/pwquality.conf
+      register: pwq_output
+      changed_when: false
+
+    - name: "[check] Résultat pwquality.conf"
+      ansible.builtin.debug:
+        var: pwq_output.stdout_lines
