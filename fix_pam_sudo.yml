@@ -1,0 +1,55 @@
+---
+- name: Fix PAM - Restaurer l'accès sudo
+  hosts: all
+  become: true
+  become_method: su          # on utilise su au lieu de sudo
+  become_user: root
+
+  tasks:
+
+    # --- Retirer pam_pwhistory qui casse sudo ---
+    - name: "[fix] Retirer pam_pwhistory de system-auth"
+      ansible.builtin.lineinfile:
+        path: /etc/pam.d/system-auth
+        regexp: '.*pam_pwhistory.so.*'
+        state: absent
+
+    - name: "[fix] Retirer pam_pwhistory de password-auth"
+      ansible.builtin.lineinfile:
+        path: /etc/pam.d/password-auth
+        regexp: '.*pam_pwhistory.so.*'
+        state: absent
+
+    # --- Retirer pam_tally2 si mal inséré ---
+    - name: "[fix] Retirer pam_tally2 de system-auth"
+      ansible.builtin.lineinfile:
+        path: /etc/pam.d/system-auth
+        regexp: '.*pam_tally2.so.*'
+        state: absent
+
+    - name: "[fix] Retirer pam_tally2 de password-auth"
+      ansible.builtin.lineinfile:
+        path: /etc/pam.d/password-auth
+        regexp: '.*pam_tally2.so.*'
+        state: absent
+
+    # --- Vérification ---
+    - name: "[check] Contenu de system-auth"
+      ansible.builtin.command:
+        cmd: cat /etc/pam.d/system-auth
+      register: system_auth
+      changed_when: false
+
+    - name: "[check] Résultat system-auth"
+      ansible.builtin.debug:
+        var: system_auth.stdout_lines
+
+    - name: "[check] Contenu de password-auth"
+      ansible.builtin.command:
+        cmd: cat /etc/pam.d/password-auth
+      register: password_auth
+      changed_when: false
+
+    - name: "[check] Résultat password-auth"
+      ansible.builtin.debug:
+        var: password_auth.stdout_lines
