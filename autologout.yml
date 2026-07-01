@@ -1,0 +1,64 @@
+---
+# Playbook Ansible : déploiement d'un timeout d'inactivité (auto-logout)
+# sur les sessions bash TTY, via /etc/profile.d/autologout.sh
+#
+# Usage :
+#   ansible-playbook -i inventory autologout.yml
+#
+# Variables surchargeables (voir vars ci-dessous ou via --extra-vars) :
+#   tmout_seconds : durée d'inactivité avant déconnexion (défaut 300 = 5 min)
+#   tmout_readonly : true pour empêcher l'utilisateur de désactiver TMOUT
+
+- name: Configurer le timeout d'inactivité des sessions shell (TMOUT)
+  hosts: all
+  become: true
+
+  vars:
+    tmout_seconds: 300
+    tmout_readonly: true
+    tmout_file: /etc/profile.d/autologout.sh
+
+  tasks:
+
+    - name: Vérifier que le shell par défaut est bash (info)
+      ansible.builtin.command: cat /etc/shells
+      register: shells_output
+      changed_when: false
+
+    - name: Afficher un avertissement si bash n'est pas dans /etc/shells
+      ansible.builtin.debug:
+        msg: >-
+          Attention : /bin/bash n'apparaît pas dans /etc/shells.
+          TMOUT ne fonctionnera que pour les sessions utilisant bash.
+      when: "'/bin/bash' not in shells_output.stdout"
+
+    - name: Déployer le script de timeout de session
+      ansible.builtin.copy:
+        dest: "{{ tmout_file }}"
+        owner: root
+        group: root
+        mode: '0755'
+        content: |
+          #!/bin/bash
+          # Déconnexion automatique après {{ tmout_seconds }} secondes d'inactivité
+          # Déployé via Ansible - ne pas modifier manuellement
+          {% if tmout_readonly %}
+          TMOUT={{ tmout_seconds }}
+          readonly TMOUT
+          export TMOUT
+          {% else %}
+          export TMOUT={{ tmout_seconds }}
+          {% endif %}
+      notify: Informer du redéploiement
+
+    - name: Vérifier la syntaxe du script déployé
+      ansible.builtin.command: "bash -n {{ tmout_file }}"
+      changed_when: false
+
+  handlers:
+    - name: Informer du redéploiement
+      ansible.builtin.debug:
+        msg: >-
+          Le fichier {{ tmout_file }} a été déployé/modifié.
+          Les nouvelles sessions TTY appliqueront un timeout de {{ tmout_seconds }} secondes.
+          Les sessions déjà ouvertes ne sont pas affectées tant qu'elles ne sont pas relancées.
